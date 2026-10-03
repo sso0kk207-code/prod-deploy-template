@@ -1,0 +1,17 @@
+{
+  "title": "Production Deploy Template",
+  "kind": "DevOps · Docker · CI/CD",
+  "tagline": "Шаблон выкладки Python-сервиса на VPS: HTTPS, бэкапы, откат и автодеплой из GitHub",
+  "accent": "#60a5fa",
+  "stack": ["Docker Compose", "Nginx", "Gunicorn", "PostgreSQL", "Redis", "Let's Encrypt", "GitHub Actions", "Alembic"],
+  "features": [
+    "Nginx: TLS, HSTS, rate limit, заголовки безопасности",
+    "Multi-stage образ, non-root, read-only, healthcheck",
+    "deploy.sh: бэкап, миграции, ожидание healthy, откат",
+    "CI/CD: тесты → образ в GHCR → деплой по SSH",
+    "Политики инфраструктуры проверяются тестами"
+  ],
+  "metrics": [["0", "открытых портов БД"], ["auto", "откат при сбое"]],
+  "files": [{"path": "docs/architecture.html", "name": "architecture.png", "height": 760, "wait": 500}],
+  "demo_title": "python scripts/demo.py — пробы, Request-ID, формат логов"
+}

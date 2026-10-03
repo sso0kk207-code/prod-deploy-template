@@ -1,0 +1,111 @@
+# Продакшен-стек: docker compose -f docker-compose.prod.yml --env-file .env up -d
+name: myapp
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }     # логи не съедят диск
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?укажите DOMAIN в .env}
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/templates:/etc/nginx/templates:ro
+      - certs:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *logging
+    networks: [edge, internal]
+
+  api:
+    image: ${IMAGE:-ghcr.io/your-name/myapp}:${TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    stop_grace_period: 30s              # дольше graceful_timeout gunicorn: запросы дорабатываются при деплое
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+    read_only: true                     # корневая ФС контейнера только для чтения
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    logging: *logging
+    networks: [internal]
+
+  migrate:                               # одноразовая задача: схема БД обновляется до старта новой версии
+    image: ${IMAGE:-ghcr.io/your-name/myapp}:${TAG:-latest}
+    command: alembic upgrade head
+    restart: "no"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: [tools]
+    networks: [internal]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits: { memory: 1G }
+    logging: *logging
+    networks: [internal]                # порт БД наружу не публикуется
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]   # кэш: данные не нужно хранить
+    logging: *logging
+    networks: [internal]
+
+  certbot:                               # выпуск и автообновление сертификатов Let's Encrypt
+    image: certbot/certbot:v2.11.0
+    restart: unless-stopped
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+    volumes:
+      - certs:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    networks: [edge]
+
+networks:
+  edge: {}        # nginx и certbot
+  internal: {}    # приложение, БД, Redis: порты наружу не публикуются, доступ к ним только из этой сети
+
+volumes:
+  pgdata:
+  certs:
+  certbot-webroot:
